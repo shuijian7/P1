@@ -13,16 +13,16 @@ import (
 
 type client struct {
 	// TODO: implement this!
-	msg           []bool
-	conn		  *lspnet.UDPConn
-	seqNum        int
-	connId        int
-	left          int
-	right         int
-	start         int
-	lastHB		  uint64
-	isClosed 	  bool
-	mu sync.Mutex
+	msg      []bool
+	conn     *lspnet.UDPConn
+	seqNum   int
+	connId   int
+	left     int
+	right    int
+	start    int
+	lastHB   uint64
+	isClosed bool
+	mu       sync.Mutex
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -39,27 +39,20 @@ type client struct {
 // hostport is a colon-separated string identifying the server's host address
 // and port number (i.e., "localhost:9999").
 func NewClient(hostport string, initialSeqNum int, params *Params) (Client, error) {
-	for {
-		go func() {
-			conn, ok := lspnet.DialUDP(network, laddr, raddr)
+	conn, err := lspnet.DialUDP(network, laddr, raddr)
 
-			if conn != nil {
-				for {
-					res := []byte
-					if _, _, err := conn.ReadFromUDP(res); err != nil {
-						return &client{msg: []Message{}, mapMsgtoArray: make(map[int]int), seqNum: 1, connId: conn, left: 0, right: 0, start: 0}, nil
-
-					}
-
-				}
-			}
-		}()
+	if err != nil {
+		fmt.Println(errors.New(err.Error()))
 	}
-	return nil, errors.New("not yet implemented")
+	c := &client{msg: []bool{}, seqNum: 1, connId: -1, conn: conn, left: 0, right: 0, start: 0}
+
+	go c.write(nil, 0)
+	_, err = c.Read()
+	return c, err
 }
 
 func (c *client) ConnID() int {
-	return -1
+	return c.connId
 }
 
 // 2. Read and checksum
@@ -70,7 +63,7 @@ func (c *client) Read() ([]byte, error) {
 		return nil, errors.New("connection closed")
 	}
 	var res []byte
-	if _,_,err := c.conn.ReadFromUDP(res); err != nil {
+	if _, _, err := c.conn.ReadFromUDP(res); err != nil {
 		return nil, errors.New("connection issue")
 	}
 	var data Message
@@ -81,6 +74,9 @@ func (c *client) Read() ([]byte, error) {
 	seq := data.SeqNum
 	if seq == 0 {
 		return data.Payload, nil
+	}
+	if c.connId == -1 {
+		c.connId = data.ConnID
 	}
 	if !c.msg[seq] {
 		c.msg[seq] = true
@@ -102,24 +98,32 @@ func (c *client) write(payload []byte, currentBackoff int) {
 		return
 	}
 	c.msg = append(c.msg, false)
-	if c.connId == -1 {
-		msg := NewConnect(0)
-		var data []byte
-		data, err := json.Marshal(msg)
-		if err != nil {
-			fmt.Println(err.Error())
-		}
 
-		if _, err := c.conn.Write(data); err != nil {
-			fmt.Println(err.Error())
-		}
-		c.seqNum++
+	var msg Message
+
+	if c.connId == -1 {
+		msg = *NewConnect(0)
+	} else {
+		// Determine data size
+		msg = *NewData(c.connId, curD, _, payload, CalculateChecksum(c.connId, curD, _, payload))
 	}
+
+	var data []byte
+	data, err := json.Marshal(msg)
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+
+	if _, err := c.conn.Write(data); err != nil {
+		fmt.Println(err.Error())
+	}
+	c.seqNum++
+
 	c.mu.Unlock()
 	if currentBackoff == 0 {
 		go c.write(payload, 1)
 	} else {
-		go c.write(payload, currentBackoff * 2)
+		go c.write(payload, currentBackoff*2)
 	}
 }
 
@@ -134,6 +138,8 @@ func (c *client) Write(payload []byte) error {
 	return errors.New("not yet implemented")
 }
 
+// Add error
 func (c *client) Close() error {
-	return errors.New("not yet implemented")
+	c.isClosed = true
+	return nil
 }
